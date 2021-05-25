@@ -18,7 +18,7 @@ from trajPlotter import plotTraj
 from movieExample import plotMovie
 
 # from parseDesignRef import uwBench as assignmentTable
-from parseDesignRef import osuWok as assignmentTable
+from parseDesignRef import uwBench as assignmentTable
 
 # I modified loic's code a bit, hacking it onto the path here
 # so we can get to it.
@@ -32,7 +32,7 @@ angStep = 0.05          # degrees per step in kaiju's rough path
 smoothPts = 5           # width of velocity smoothing window
 epsilon = angStep * 2   # max error (deg) allowed in kaiju's path simplification
 collisionBuffer = 2.5     # effective *radius* of beta arm in mm effective beta arm width is 2*collisionBuffer
-collisionShrink = 0.02  # amount to decrease collisionBuffer by when checking smoothed and simplified paths
+collisionShrink = 0.04  # amount to decrease collisionBuffer by when checking smoothed and simplified paths
 ##################################################
 
 ################ Coordinates ####################
@@ -139,8 +139,7 @@ def homeGrid():
     seed = 0
     rg = gridInit(seed)
 
-    for ii in range(rg.nRobots):
-        r = rg.getRobot(ii)
+    for r in rg.robotDict.values():
         r.setAlphaBeta(alphaTarget, betaTarget)
     return rg
 
@@ -255,8 +254,7 @@ async def unwindGrid(fps):
     rg = homeGrid() # get a grid
     # overwrite the positions to the positions that the robots
     # are reporting
-    for ii in range(rg.nRobots):
-        r = rg.getRobot(ii)
+    for r in rg.robotDict.values():
         await fps.positioners[r.id].update_position()
         alpha, beta = fps.positioners[r.id].position
         r.setAlphaBeta(alpha, beta)
@@ -319,12 +317,16 @@ async def main(
         seed=None,
         doCentroid=False,
         continuous=False,
-        unwindOnly=False,
+        unwindOnly=True,
         doComplicated=False,
         alphaLimit=None,
         ):
     fps = FPS()
     await fps.initialise()
+
+    print("wait for initialize")
+    await asyncio.sleep(5)
+    print("done waiting")
 
     # first unwind the grid, to ensure we start from a reasonable point
     print("unwinding grid")
@@ -346,7 +348,7 @@ async def main(
     # print("FPS status", fps[robotID].status)
     while True:
         print("running pair of paths seed = %i"%seed)
-        await runPathPair(fps, seed, doComplicated, doCentroid, alphaLimit)
+        await runPathPair(fps, seed, doComplicated, alphaLimit)
         if fps.locked:
             print("FPS is locked! exiting\n")
             break
@@ -359,36 +361,46 @@ async def main(
     await fps.shutdown()
 
 if __name__ == "__main__":
-    alphaLimit = None
-    seed = 0
-    complicatedThreshold = 70
-    while True:
-        seed += 1
-        rg = newGrid(seed, alphaLimit)
-        try:
-            forwardPath, reversePath = generatePath(rg, plot=False, movie=False, fileIndex=0)
-        except:
-            print("skipping deadlocked path")
-            continue
-        maxSteps = 0
-        for abDict in forwardPath.values():
-            nPts = len(abDict["beta"])
-            if nPts > maxSteps:
-                maxSteps = nPts
-        if maxSteps > complicatedThreshold:
-            print("found complicated path!", maxSteps)
-            # exit function here
-            break
-    rg = newGrid(seed, alphaLimit)
-    forwardPath, reversePath = generatePath(rg, plot=True, movie=True, fileIndex=0)
+    seed = None
+    doCentroid = False
+    continuous = True
+    unwindOnly = False
+    doComplicated = False
+    alphaLimit = None # degrees
+    # betaLimit = 45
+    asyncio.run(main(seed, doCentroid, continuous, unwindOnly, doComplicated, alphaLimit))
 
-    # seed = None
-    # doCentroid = False
-    # continuous = True
-    # unwindOnly = False
-    # doComplicated = False
-    # alphaLimit = 340 # degrees
-    # asyncio.run(main(seed, doCentroid, continuous, unwindOnly, doComplicated, alphaLimit))
+
+    # alphaLimit = None
+    # seed = 0
+    # complicatedThreshold = 70
+    # while True:
+    #     seed += 1
+    #     rg = newGrid(seed, alphaLimit)
+    #     try:
+    #         forwardPath, reversePath = generatePath(rg, plot=False, movie=False, fileIndex=0)
+    #     except:
+    #         print("skipping deadlocked path")
+    #         continue
+    #     maxSteps = 0
+    #     for abDict in forwardPath.values():
+    #         nPts = len(abDict["beta"])
+    #         if nPts > maxSteps:
+    #             maxSteps = nPts
+    #     if maxSteps > complicatedThreshold:
+    #         print("found complicated path!", maxSteps)
+    #         # exit function here
+    #         break
+    # rg = newGrid(seed, alphaLimit)
+    # forwardPath, reversePath = generatePath(rg, plot=True, movie=True, fileIndex=0)
+
+    # # seed = None
+    # # doCentroid = False
+    # # continuous = True
+    # # unwindOnly = False
+    # # doComplicated = False
+    # # alphaLimit = 340 # degrees
+    # # asyncio.run(main(seed, doCentroid, continuous, unwindOnly, doComplicated, alphaLimit))
 
 
 
