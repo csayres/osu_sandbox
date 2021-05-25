@@ -1,12 +1,14 @@
 # NOTE: this has been tested with jaeger tag 0.4.2
 # if things aren't working try ensuring you're using this jaeger version
+import matplotlib
+matplotlib.use("Agg")
 
 import sys
 import os
 import asyncio
 from jaeger import FPS, log
 import matplotlib.pyplot as plt
-import matplotlib
+# import matplotlib
 import numpy
 from collections import OrderedDict
 
@@ -15,12 +17,13 @@ from kaiju import RobotGrid
 from trajPlotter import plotTraj
 from movieExample import plotMovie
 
-from parseDesignRef import uwBench as assignmentTable
+# from parseDesignRef import uwBench as assignmentTable
+from parseDesignRef import osuWok as assignmentTable
 
 # I modified loic's code a bit, hacking it onto the path here
 # so we can get to it.
 
-matplotlib.use("TkAgg")
+# matplotlib.use("TkAgg")
 
 ########### Kaiju Parameters #####################
 ##################################################
@@ -40,7 +43,7 @@ collisionShrink = 0.02  # amount to decrease collisionBuffer by when checking sm
 # Kaiju's definition is:
 # +x is in the direction of alpha = 0
 # +y is in the direction of alpha = 90
-AngleToKaiju = 90  # degrees.
+AngleToKaiju = -90  # degrees.
 
 c90 = numpy.cos(numpy.radians(AngleToKaiju))
 s90 = numpy.sin(numpy.radians(AngleToKaiju))
@@ -48,48 +51,51 @@ rot2kaiju = numpy.array([
     [c90, s90],
     [-s90, c90]
 ])
-rot2image = numpy.array([
-    [c90, -s90],
-    [s90, c90]
-])
-
-
-posDict = OrderedDict()
-# modify the coordinates below with every new calibration
-# these are calibration outputs measured in mm from top left
-# looking at the robot grid
-# (** NOTE THE NEGATIVE Y VALUES!)
-# (** NOTE put positioners in ascending order of ID)
-
-posDict[23] = numpy.array([50.17, -65.85])
-posDict[242] = numpy.array([72.70, -65.80])
-posDict[272] = numpy.array([83.99, -46.86])
-posDict[308] = numpy.array([39.11, -46.09])
-posDict[315] = numpy.array([50.48, -26.87])
-posDict[359] = numpy.array([72.92, -27.10])
-posDict[365] = numpy.array([61.61, -46.32])
-
-
-
-centerXYMM = posDict[centerPositioner]
-# rotate grid such that it is aligned with
-# kaiju's definition (alpha=0 is aligned with +x)
-for key in posDict.keys():
-    fromMiddle = posDict[key] - centerXYMM
-    posDict[key] = numpy.dot(fromMiddle, rot2kaiju)
 
 
 ## sort grid by positioner id (because the comments say to do that?)
-assignmentTable.sort_by("assignment", inplace=True, ignore_index=True)
+assignmentTable.sort_values("assignment", inplace=True, ignore_index=True)
 posTable = assignmentTable[assignmentTable.assignment != -1]
 fidTable = assignmentTable[assignmentTable.assignment == -1]
 
 posXY = posTable[["x", "y"]].to_numpy()
+posXY = (rot2kaiju @ posXY.T).T
 posID = posTable["assignment"].to_numpy(dtype=int)
 
 fidXY = fidTable[["x", "y"]].to_numpy()
+fidXY = (rot2kaiju @ fidXY.T).T
 
-import pdb; pdb.set_trace()
+# plt.figure()
+# for _posID, (x,y) in zip(posID, posXY):
+#     # print(posID, x,y)
+#     plt.plot(x,y,"x")
+# for x,y in fidXY:
+#     print(x,y)
+#     plt.plot(x,y,"o")
+# for _posID, (x,y) in zip(posID, posXY):
+#     # print(posID, x,y)
+#     plt.text(x,y,"%i"%_posID)
+# plt.xlim([-100,100])
+# plt.ylim([-100,100])
+# # plt.axis("equal")
+# plt.savefig("rot.png", dpi=350)
+# plt.close()
+
+# import pdb; pdb.set_trace()
+
+
+def gridInit(seed):
+    hasApogee = True
+    rg = RobotGrid(angStep, collisionBuffer, epsilon, seed)
+
+    for _posID, (xp, yp) in zip(posID, posXY):
+        rg.addRobot(_posID, xp, yp, hasApogee)
+    fid = 1
+    for xf, yf in fidXY:
+        rg.addFiducial(fid, xf, yf)
+        fid += 1
+    rg.initGrid()
+    return rg
 
 
 ###############################################################
@@ -101,23 +107,19 @@ def newGrid(seed=0, alphaLimit=None):
     are unchanged.  If you modify kaiju parameters you are not guarenteed
     to get the same grid (though there is a good chance you will).
     """
-    hasApogee = True
-    rg = RobotGrid(angStep, collisionBuffer, epsilon, seed)
 
-    for posID, (xp, yp) in posDict.items():
-        rg.addRobot(posID, xp, yp, hasApogee)
-    rg.initGrid()
+    rg = gridInit(seed)
 
     while True:
-        for ii in range(rg.nRobots):
+        for ii in posID:
             r = rg.getRobot(ii)
             r.setXYUniform()
-        rg.decollide2()
+        rg.decollideGrid()
         if alphaLimit is None:
             break
         # check all alphas are below limits
         alphaOK = True
-        for r in rg.allRobots:
+        for r in rg.robotDict.values():
             if r.alpha > alphaLimit:
                 print("alpha over limits, trying again")
                 alphaOK = False
@@ -135,11 +137,7 @@ def homeGrid():
     betaTarget = 180
     hasApogee = True
     seed = 0
-    rg = RobotGrid(angStep, collisionBuffer, epsilon, seed)
-
-    for posID, (xp, yp) in posDict.items():
-        rg.addRobot(posID, xp, yp, hasApogee)
-    rg.initGrid()
+    rg = gridInit(seed)
 
     for ii in range(rg.nRobots):
         r = rg.getRobot(ii)
@@ -153,23 +151,21 @@ def safeGrid(alphaDeg, betaDeg):
     """
     hasApogee = True
     seed = 0
-    rg = RobotGrid(angStep, collisionBuffer, epsilon, seed)
 
-    for posID, (xp, yp) in posDict.items():
-        rg.addRobot(posID, xp, yp, hasApogee)
-    rg.initGrid()
+    rg = gridInit(seed)
 
     for ii in range(rg.nRobots):
         r = rg.getRobot(ii)
         r.setAlphaBeta(alphaDeg, betaDeg)
     return rg
 
+
 def getTargetPositions(rg):
     """Return a dictionary of target positions for each
     positioner.
     """
     targetPositions = OrderedDict()
-    for r in rg.allRobots:
+    for r in rg.robotDict.values():
         x, y, z = r.metFiberPos
         targetPositions[r.id] = [x, y]
     return targetPositions
@@ -199,7 +195,7 @@ def generatePath(rg, plot=False, movie=False, fileIndex=0):
     forwardPath = {}
     reversePath = {}
 
-    for robotID, r in zip(posDict.keys(), rg.allRobots):
+    for robotID, r in zip(posID, rg.robotDict.values()):
 
         assert robotID == r.id
         if plot:
@@ -247,122 +243,6 @@ def generatePath(rg, plot=False, movie=False, fileIndex=0):
 
     return forwardPath, reversePath
 
-def centroid(imgData, positionerTargetsMM, plot=False):
-    """Detect and measure centroids based on the input imageData and
-    positionerTargetsMM (targets are given in MM in Kaiju's reference frame)
-
-    (** Note Rows of the image are immediately inverted such that 0,0 corresponds
-    to the lower left of the grid when looking at it)
-
-    return a dictionary keyed by positioner ID of XY offsets to apply in
-    mm in kaiju's coordinate system.
-    """
-    roiRadiusPx = int(numpy.floor(roiRadiusMM / scaleFac))
-    imgData = imgData[::-1,:] # invert the rows of the image
-    numCols, numRows = imgData.shape
-    mask = numpy.zeros(imgData.shape) + 1
-    # build the mask, draw squares around expected positions
-    positionerTargetsPx = OrderedDict()
-    for posID, xyKaijuMM in positionerTargetsMM.items():
-        # take abs value of positioner because it's y axis is defined
-        # negative (loic's positions are measured from top left)
-        xyImageMM = numpy.dot(xyKaijuMM, rot2image) + numpy.abs(centerXYMM)
-        xTargetPx, yTargetPx = xyImageMM / scaleFac
-        positionerTargetsPx[posID] = numpy.array([xTargetPx, yTargetPx])
-        # rotate into reference frame with 0,0 at bottom left
-        xROI = numpy.int(numpy.floor(xTargetPx))
-        yROI = numpy.int(numpy.floor(yTargetPx))
-        startRow = xROI - roiRadiusPx
-        if startRow < 0:
-            startRow = 0
-        endRow = xROI + roiRadiusPx
-        if endRow > imgData.shape[1]:
-            endRow = imgData.shape[1]
-
-        startCol = yROI - roiRadiusPx
-        if startCol < 0:
-            startCol = 0
-        endCol = yROI + roiRadiusPx
-        if endCol > imgData.shape[0]:
-            endCol = imgData.shape[0]
-
-        mask[startCol:endCol, startRow:endRow] = 0
-
-    # imshow defaults to -0.5, -0.5 for origin, set this to 0,0
-    # plot the mask used too make it positive valued so it shows up
-    if plot:
-        plt.imshow(imgData + numpy.abs(mask-1)*200, origin="lower", extent=(0, numRows, 0, numCols))
-
-    # find all the centroids, and loop through and plot them
-    ctrDataList, imStats = PyGuide.findStars(
-        data = imgData,
-        mask = mask,
-        satMask = None,
-        thresh=detectThresh,
-        ccdInfo = CCDInfo,
-        verbosity = 0,
-        doDS9 = False,
-    )[0:2]
-    centroidsPx = []
-    for ctrData in ctrDataList:
-        # need to index explicity because ctrData is actually an object
-        centroidsPx.append(ctrData.xyCtr)
-        xyCtr = ctrData.xyCtr
-        rad = ctrData.rad
-        counts = ctrData.counts
-        if plot:
-            plt.plot(xyCtr[0], xyCtr[1], 'or', markersize=10, fillstyle="none")#, alpha=0.2)
-        # print("star xyCtr=%.2f, %.2f, radius=%s counts=%.2f" % (xyCtr[0], xyCtr[1], rad, counts))
-    # plot the desired targets
-    centroidsPx = numpy.asarray(centroidsPx)
-    nTargs = len(positionerTargetsPx.values())
-    nCentroids = len(centroidsPx)
-
-    if plot:
-        for posID, (xTargetPx, yTargetPx) in positionerTargetsPx.items():
-            plt.plot(xTargetPx, yTargetPx, 'xr', markersize=10)
-        plt.show()
-        plt.close()
-
-    # calculate distances between all targets and all centroids
-    if nCentroids > nTargs:
-        # don't allow false positives
-        raise RuntimeError("more centroids than targets")
-    if nCentroids < nTargs:
-        #allow missing centroids
-        print("warning: more targets than centroids")
-    if nCentroids == 0:
-        raise RuntimeError("didn't find any centroids")
-
-    # print("distMat shappe", distMat.shape)
-    targArrayPx = numpy.array(list(positionerTargetsPx.values()))
-    targIdArray = list(positionerTargetsPx.keys())
-    # for each centroid give it a target
-    cent2target = [] # holds centroidIndex, targetIndex, and distance to target in px
-    for centInd, cent in enumerate(centroidsPx):
-        # a row of disntances for this target
-        distArr = numpy.array([numpy.linalg.norm(targ-cent) for targ in targArrayPx])
-        targInd = numpy.argmin(distArr)
-        cent2target.append([centInd, targInd, distArr[targInd]])
-    cent2target = numpy.array(cent2target)
-    # for paranoia, remove any targets with distance greater than the ROI,
-    # not sure this could happen but check anyways
-    cent2target = cent2target[cent2target[:,2] < roiRadiusPx]
-
-    # calculate the offsets (vector from centroid to target)
-    # in kaiju's reference frame in mm
-    positionerOffsets = OrderedDict()
-    for cInd, tInd, dist in cent2target:
-        tInd = int(tInd)
-        cInd = int(cInd)
-        posID = targIdArray[tInd]
-        targPix = targArrayPx[tInd]
-        centPix = centroidsPx[cInd]
-        offPx = targPix - centPix
-        offMM = numpy.dot(offPx * scaleFac, rot2kaiju)
-        positionerOffsets[posID] = offMM
-
-    return positionerOffsets
 
 async def unwindGrid(fps):
     """Unwind the positioners from any starting point.
@@ -385,53 +265,8 @@ async def unwindGrid(fps):
 
     await fps.send_trajectory(reversePath)
 
-async def cameraFeedback(rg, fps, targetPositions):
-    """Implement a sequence of correction moves based on camera feedback
-    """
-    positionerAlphaBeta = OrderedDict()
-    for r in rg.allRobots:
-        positionerAlphaBeta[r.id] = [r.alphaPath[0][1], r.betaPath[0][1]]
 
-    for posIter in range(5):
-        # measure the positions of all the guys use 4 images for centroid
-        imgDataList = []
-        for imageIter in range(nImgAvg):
-            imgDataList.append(csCam.camera.getImage())
-        # centroid on the average image
-        imgData = numpy.sum(imgDataList, axis=0) / nImgAvg
-        positionerOffsets = centroid(imgData, targetPositions, plot=False)
-        # print the position errors in microns
-        for r in rg.allRobots:
-            try:
-                xOffMM, yOffMM = positionerOffsets[r.id]
-            except:
-                print("no found offset for robot %i, skipping correction")
-                continue
-
-            print("iter %i: robot %i has error of %.2f microns"%(posIter, r.id, numpy.linalg.norm([xOffMM, yOffMM]) * 1000 ))
-            # figure out alpha beta offset for this positioner
-            alphaLast, betaLast = positionerAlphaBeta[r.id]
-            r.setAlphaBeta(alphaLast, betaLast)
-            xFiberLast, yFiberLast, zFiberLast = r.metFiberPos
-            # add fiber offset
-            xOff, yOff = positionerOffsets[r.id]
-            nextFiberX = xFiberLast + xOff
-            nextFiberY = yFiberLast + yOff
-            metFiberID = 0
-            nextAlpha, nextBeta = r.alphaBetaFromFiberXY(nextFiberX, nextFiberY, metFiberID)
-            if numpy.isnan(nextAlpha) or numpy.isnan(nextBeta):
-                # positioner can't reach desired offset don't do anything
-                print("desired offset is out of range, not applying")
-                continue
-            alphaOff = nextAlpha - alphaLast
-            betaOff = nextBeta - betaLast
-            if numpy.max(numpy.abs([alphaOff, betaOff])) > 10:
-                print("max alpha beta offsets are too high: %.2f, %.2f"%(alphaOff, betaOff))
-                continue
-            positionerAlphaBeta[r.id] = [nextAlpha, nextBeta]
-            await fps[r.id].goto(alpha=nextAlpha, beta=nextBeta)
-
-async def runPathPair(fps, seed=0, doComplicated=False, doCentroid=False, alphaLimit=None):
+async def runPathPair(fps, seed=0, doComplicated=False, alphaLimit=None):
     """Command FPS to do 3 moves:
     1st move: all positioners to 0, 180 (warning, no check for safety is done!)
     2nd move: forward path to targets found based on seed input
@@ -467,16 +302,13 @@ async def runPathPair(fps, seed=0, doComplicated=False, doCentroid=False, alphaL
             return
 
     # send all to 0 180
-    gotoHome = [fps[rID].goto(alpha=0, beta=180) for rID in posDict.keys()]
+    gotoHome = [fps[rID].goto(alpha=0, beta=180) for rID in posID]
     await asyncio.gather(*gotoHome)
 
     # command the forward path
     print("forward path going")
     await fps.send_trajectory(forwardPath)
 
-
-    if doCentroid:
-        await cameraFeedback(rg, fps, targetPositions)
 
     print("reverse path going")
     await fps.send_trajectory(reversePath)
@@ -526,7 +358,30 @@ async def main(
         # Cleanly finish all pending tasks and exit
     await fps.shutdown()
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
+    alphaLimit = None
+    seed = 0
+    complicatedThreshold = 70
+    while True:
+        seed += 1
+        rg = newGrid(seed, alphaLimit)
+        try:
+            forwardPath, reversePath = generatePath(rg, plot=False, movie=False, fileIndex=0)
+        except:
+            print("skipping deadlocked path")
+            continue
+        maxSteps = 0
+        for abDict in forwardPath.values():
+            nPts = len(abDict["beta"])
+            if nPts > maxSteps:
+                maxSteps = nPts
+        if maxSteps > complicatedThreshold:
+            print("found complicated path!", maxSteps)
+            # exit function here
+            break
+    rg = newGrid(seed, alphaLimit)
+    forwardPath, reversePath = generatePath(rg, plot=True, movie=True, fileIndex=0)
+
     # seed = None
     # doCentroid = False
     # continuous = True

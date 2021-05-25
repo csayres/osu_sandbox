@@ -20,7 +20,7 @@ def plotFirst(stepInd, rg, stepsFirst):
     step = int(stepsFirst[stepInd])
     fig = plt.figure(figsize=(9,10))
     ax = fig.add_axes([0,0,1,1])
-    for robot in rg.allRobots:
+    for robot in rg.robotDict.values():
         alphaX = robot.roughAlphaX[step][1]
         alphaY = robot.roughAlphaY[step][1]
         betaX = robot.roughBetaX[step][1]
