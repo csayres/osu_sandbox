@@ -202,8 +202,8 @@ def getOSUMini():
     return updateAssignments(rows, cols, idAssign)
 
 osuMini = getOSUMini()
-with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
-    print(osuMini)
+#with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
+#    print(osuMini)
 
 
 # sns.scatterplot(x="x", y="y", data=osuMini)
@@ -219,9 +219,9 @@ with pd.option_context('display.max_rows', None, 'display.max_columns', None):  
 
 # import pdb; pdb.set_trace()
 
-sns.scatterplot(x="x", y="y", style="type", data=osuMini)
-plt.axis("equal")
-plt.show()
+#sns.scatterplot(x="x", y="y", style="type", data=osuMini)
+#plt.axis("equal")
+#plt.show()
 
 
 
