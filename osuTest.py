@@ -18,7 +18,7 @@ from trajPlotter import plotTraj
 from movieExample import plotMovie
 
 # from parseDesignRef import uwBench as assignmentTable
-from parseDesignRef import uwBench as assignmentTable
+from parseDesignRef import osuWok as assignmentTable
 
 # I modified loic's code a bit, hacking it onto the path here
 # so we can get to it.

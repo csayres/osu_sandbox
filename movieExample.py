@@ -16,7 +16,7 @@ from kaiju import utils, RobotGrid
 from collections import OrderedDict
 import functools
 
-def plotFirst(stepInd, rg, stepsFirst):
+def plotFirst(stepInd, rg, stepsFirst, lims):
     step = int(stepsFirst[stepInd])
     fig = plt.figure(figsize=(9,10))
     ax = fig.add_axes([0,0,1,1])
@@ -35,8 +35,8 @@ def plotFirst(stepInd, rg, stepsFirst):
         patch = PolygonPatch(topCollideLine, fc=topcolor, ec=edgecolor, alpha=0.5, zorder=10)
         ax.add_patch(patch)
     ax.set_aspect('equal', 'box')
-    ax.set_xlim([-50, 50])
-    ax.set_ylim([-50, 50])
+    ax.set_xlim([-lims, lims])
+    ax.set_ylim([-lims, lims])
     ax.set_xticks([])
     ax.set_yticks([])
     ax.axis('off')
@@ -51,8 +51,14 @@ def plotMovie(rg, filename="movie"):
     # partial = functools.partial(plotFirst, rg=rg, stepsFirst=stepsFirst)
     # p = Pool(cpu_count())
     # p.map(partial, range(len(stepsFirst)))
+    xs = [r.xPos for r in rg.robotDict.values()]
+    ys = [r.yPos for r in rg.robotDict.values()]
+    maxX = numpy.max(numpy.abs(xs))
+    maxY = numpy.max(numpy.abs(ys))
+    lims = numpy.max([maxX, maxY]) + 22.4
+    print("lims", lims)
     for ii in range(len(stepsFirst)):
-        plotFirst(ii, rg, stepsFirst)
+        plotFirst(ii, rg, stepsFirst, lims)
 
 
 
