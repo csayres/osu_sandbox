@@ -19,6 +19,14 @@ from movieExample import plotMovie
 
 # from parseDesignRef import uwBench as assignmentTable
 from parseDesignRef import uwBench as assignmentTable
+import datetime
+
+import traceback
+import json
+
+import pandas as pd
+
+from baslerCam import BaslerCamera, BaslerCameraSystem, config
 
 # I modified loic's code a bit, hacking it onto the path here
 # so we can get to it.
@@ -31,8 +39,14 @@ Speed = 3               # RPM at output
 angStep = 0.05          # degrees per step in kaiju's rough path
 smoothPts = 5           # width of velocity smoothing window
 epsilon = angStep * 2   # max error (deg) allowed in kaiju's path simplification
-collisionBuffer = 2.5     # effective *radius* of beta arm in mm effective beta arm width is 2*collisionBuffer
-collisionShrink = 0.04  # amount to decrease collisionBuffer by when checking smoothed and simplified paths
+collisionBuffer = 2.4    # effective *radius* of beta arm in mm effective beta arm width is 2*collisionBuffer
+collisionShrink = 0.05  # amount to decrease collisionBuffer by when checking smoothed and simplified paths
+exptime = 10000 # micro seconds
+nAvgImg = 20 # number of stack
+CONTINUOUS = True
+UNWINDONLY = False
+TAKE_IMGS = False
+LED_VALUE = 52
 ##################################################
 
 ################ Coordinates ####################
@@ -169,6 +183,20 @@ def getTargetPositions(rg):
         targetPositions[r.id] = [x, y]
     return targetPositions
 
+def getTargetAlphaBeta(rg):
+    """Return a dictionary of target positions for each
+    positioner.
+    """
+    targetPositions = OrderedDict()
+    posIDs = []
+    alphas = []
+    betas = []
+    for r in rg.robotDict.values():
+        posIDs.append(r.id)
+        alphas.append(r.alpha)
+        betas.append(r.beta)
+    return posIDs, alphas, betas
+
 
 def generatePath(rg, plot=False, movie=False, fileIndex=0):
     """Run the path generator for an initialized RobotGrid rg.
@@ -225,7 +253,7 @@ def generatePath(rg, plot=False, movie=False, fileIndex=0):
         armPathR["alpha"] = [(pos, time+0.5) for pos, time in zip(alphaDegR, alphaTimesR)]
         armPathR["beta"] = [(pos, time+0.5) for pos, time in zip(betaDegR, betaTimesR)]
 
-        reversePath[robotID] = armPathR
+        reversePath[int(robotID)] = armPathR
 
         # build forward path
         alphaTimesF = numpy.abs(alphaTimesR-alphaTimesR[-1])[::-1]
@@ -238,7 +266,7 @@ def generatePath(rg, plot=False, movie=False, fileIndex=0):
         armPathF["beta"] = [(pos, time) for pos, time in zip(betaDegF, betaTimesF)]
 
 
-        forwardPath[robotID] = armPathF
+        forwardPath[int(robotID)] = armPathF
 
     return forwardPath, reversePath
 
@@ -259,12 +287,45 @@ async def unwindGrid(fps):
         alpha, beta = fps.positioners[r.id].position
         r.setAlphaBeta(alpha, beta)
 
+    for r in rg.robotDict.values():
+        if rg.isCollided(r.id):
+            print("robot ", r.id, " is collided")
     forwardPath, reversePath = generatePath(rg)
 
     await fps.send_trajectory(reversePath)
 
+    # if fps.locked:
+        #  await fps.unlock(force=true)
+        # try to u
 
-async def runPathPair(fps, seed=0, doComplicated=False, alphaLimit=None):
+async def expose(cam, fps, data, kind, seed):
+
+    on_value = 32 * int(1023 * (LED_VALUE / 100))
+    off_value = 0
+    device = fps.ieb.get_device("led1")
+
+    tnow = datetime.datetime.now().isoformat()
+    expOn = tnow + "_%s_%i_on.fits"%(kind, seed)
+    expOff = tnow + "_%s_%i_off.fits"%(kind, seed)
+    dataname = tnow + "_%s_%i.csv"%(kind, seed)
+    #  turn off ieb light
+    await device.write(on_value)
+    await asyncio.sleep(0.5)
+
+    exp = await cam.expose(exptime * 1e-6, stack=nAvgImg, filename=expOn)
+    await exp.write()
+
+    print("max counts", numpy.max(exp.data))
+
+    await device.write(off_value)
+    await asyncio.sleep(0.5)
+
+    exp = await cam.expose(exptime * 1e-6, stack=nAvgImg, filename=expOff)
+    await exp.write()
+
+    data.to_csv(dataname, index=False)
+
+async def runPathPair(fps, seed=0, doComplicated=False, alphaLimit=None, logfile=None, cam=None):
     """Command FPS to do 3 moves:
     1st move: all positioners to 0, 180 (warning, no check for safety is done!)
     2nd move: forward path to targets found based on seed input
@@ -276,51 +337,168 @@ async def runPathPair(fps, seed=0, doComplicated=False, alphaLimit=None):
     if you increase smoothing or epsilon, then you may not get any complicated
     paths.  Right now the complicated threshold is set to 50
     """
+    pathfile = None
+    if logfile:
+        pathfile = "failedPaths" + logfile.strip(".log").strip("log2") + ".json"
+
     # minimum number of trajectory points for a complicated path
-    complicatedThreshold = 50
+    complicatedThreshold = 70
 
     rg = newGrid(seed, alphaLimit)
     targetPositions = getTargetPositions(rg)
+    posIDs, targAlphas, targBetas = getTargetAlphaBeta(rg)
     print("otachi, seed=%i, collisionBuffer=%.4f"%(seed, collisionBuffer))
     try:
-        forwardPath, reversePath = generatePath(rg) # this will runtime error if failed
+        pathPair = generatePath(rg) # this will runtime error if failed
+        forwardPath, reversePath = pathPair
+        totalPathPoints = 0
+        longestPathPoint = -1
+        for posID, p in forwardPath.items():
+            for x in ["alpha", "beta"]:
+                pp = len(p[x])
+                if pp > longestPathPoint:
+                    longestPathPoint = pp
+                totalPathPoints += pp
     except:
         print("skipping this path due to deadlock or initially collided orientation")
         return
 
-    if doComplicated:
-        maxSteps = 0
-        for abDict in forwardPath.values():
-            nPts = len(abDict["beta"])
-            if nPts > maxSteps:
-                maxSteps = nPts
-        if maxSteps < complicatedThreshold:
-            print("skipping un interesting path")
-            # exit function here
-            return
+    # if doComplicated:
+    #     maxSteps = 0
+    #     for abDict in forwardPath.values():
+    #         nPts = len(abDict["beta"])
+    #         if nPts > maxSteps:
+    #             maxSteps = nPts
+    #     if maxSteps < complicatedThreshold:
+    #         print("skipping un interesting path")
+    #         # exit function here
+    #         return
 
     # send all to 0 180
-    gotoHome = [fps[rID].goto(alpha=0, beta=180) for rID in posID]
-    await asyncio.gather(*gotoHome)
+    # gotoHome = [fps[rID].goto(alpha=0, beta=180) for rID in posID]
+    # await asyncio.gather(*gotoHome)
+
+    # take image of grid before motion
+    reportAlpha = []
+    reportBeta = []
+    cmdAlpha = []
+    cmdBeta = []
+    robotID = []
+    for r in rg.robotDict.values():
+        await fps.positioners[r.id].update_position()
+        alpha, beta = fps.positioners[r.id].position
+        robotID.append(r.id)
+        reportAlpha.append(alpha)
+        reportBeta.append(beta)
+        cmdAlpha.append(0)
+        cmdBeta.append(180)
+
+    d = {}
+    d["reportAlpha"] = reportAlpha
+    d["reportBeta"] = reportBeta
+    d["cmdAlpha"] = cmdAlpha
+    d["cmdBeta"] = cmdBeta
+    d["robotID"] = robotID
+    df = pd.DataFrame(d)
+
+    if TAKE_IMGS:
+        await expose(cam, fps, df, "fold", seed)
+        await asyncio.sleep(0.5)
+
 
     # command the forward path
     print("forward path going")
-    await fps.send_trajectory(forwardPath)
+    if logfile is not None:
+        with open(logfile, "a") as f:
+            f.write("totalPathPoints=%i, longestPathPoint=%i\n"%(totalPathPoints, longestPathPoint))
+            f.write("begin forward seed=%i\n"%seed)
 
+    try:
+        await fps.send_trajectory(forwardPath)
+    except Exception as e:
+        if logfile is not None:
+            with open(logfile, "a") as f:
+                f.write("Forward Path EXCEPTION!!!\n%s\n"%str(e))
+                traceback.print_exc(file=f)
+                f.write("\n\ntotalPathPoints=%i, longestPathPoint=%i\n"%(totalPathPoints, longestPathPoint))
+                with open(pathfile, 'w') as outfile:
+                    print(pathPair)
+                    json.dump(pathPair, outfile)
+        raise e
+
+    await asyncio.sleep(0.5)
+    # take image of grid after motion
+    reportAlpha = []
+    reportBeta = []
+    cmdAlpha = []
+    cmdBeta = []
+    robotID = []
+    for rid, targAlpha, targBeta in zip(posIDs, targAlphas, targBetas):
+        await fps.positioners[rid].update_position()
+        alpha, beta = fps.positioners[rid].position
+        robotID.append(rid)
+        reportAlpha.append(alpha)
+        reportBeta.append(beta)
+        cmdAlpha.append(targAlpha)
+        cmdBeta.append(targBeta)
+
+    d = {}
+    d["reportAlpha"] = reportAlpha
+    d["reportBeta"] = reportBeta
+    d["cmdAlpha"] = cmdAlpha
+    d["cmdBeta"] = cmdBeta
+    d["robotID"] = robotID
+    df = pd.DataFrame(d)
+
+    if TAKE_IMGS:
+        await expose(cam, fps, df, "targ", seed)
+        await asyncio.sleep(0.5)
+
+    # print("unwinding grid")
+    # await unwindGrid(fps)
 
     print("reverse path going")
-    await fps.send_trajectory(reversePath)
+    if logfile is not None:
+        with open(logfile, "a") as f:
+            f.write("begin reverse seed=%i\n"%seed)
+    try:
+        await fps.send_trajectory(reversePath)
+    except Exception as e:
+        if logfile is not None:
+            with open(logfile, "a") as f:
+                f.write("Reverse Path EXCEPTION!!!\n%s\n"%str(e))
+                traceback.print_exc(file=f)
+                f.write("\n\ntotalPathPoints=%i, longestPathPoint=%i\n"%(totalPathPoints, longestPathPoint))
+                with open(pathfile, 'w') as outfile:
+                    json.dump(pathPair, outfile)
+
+        raise e
+
 
 
 
 async def main(
         seed=None,
-        doCentroid=False,
         continuous=False,
         unwindOnly=True,
         doComplicated=False,
         alphaLimit=None,
         ):
+
+    if TAKE_IMGS:
+        camID = 0
+        bcs = BaslerCameraSystem(BaslerCamera, camera_config=config)
+        sids = bcs.list_available_cameras()
+        cam = await bcs.add_camera(uid=sids[camID], autoconnect=True)
+    else:
+        cam = None
+
+    logtime = datetime.datetime.now().isoformat()
+    logFile = "log_" + logtime + ".log"
+    with open(logFile, "w") as f:
+        f.write("#begin sequence\n")
+    reconfigIter = 0
+
     fps = FPS()
     await fps.initialise()
 
@@ -330,7 +508,14 @@ async def main(
 
     # first unwind the grid, to ensure we start from a reasonable point
     print("unwinding grid")
-    await unwindGrid(fps)
+    with open(logFile, "a") as f:
+        f.write("unwinding grid\n")
+    try:
+        await unwindGrid(fps)
+    except Exception as e:
+        with open(logFile, "a") as f:
+            f.write("EXCEPTION!!!\n%s"%str(e))
+        raise e
 
     print("unwind only", unwindOnly)
     if unwindOnly:
@@ -338,7 +523,7 @@ async def main(
         await fps.shutdown()
         return
 
-    trialNumber = 164323
+    trialNumber = 0
     # if seed is None, pick a random one
     # if continuous is on, this will be the starting point
     # seeds will be incremented
@@ -348,9 +533,14 @@ async def main(
     # print("FPS status", fps[robotID].status)
     while True:
         print("running pair of paths seed = %i"%seed)
-        await runPathPair(fps, seed, doComplicated, alphaLimit)
+        with open(logFile, "a") as f:
+            f.write("running pair of paths seed=%i iter=%i dt=%s\n"%(seed, reconfigIter, datetime.datetime.now().isoformat()))
+
+        await runPathPair(fps, seed, doComplicated, alphaLimit, logFile, cam)
         if fps.locked:
             print("FPS is locked! exiting\n")
+            with open(logFile, "a") as f:
+                f.write("FPS is locked! exiting\n")
             break
         if not continuous:
             break
@@ -358,49 +548,13 @@ async def main(
         seed += 1
         print(f"trial number: {trialNumber}")
         # Cleanly finish all pending tasks and exit
+        reconfigIter += 1
     await fps.shutdown()
 
 if __name__ == "__main__":
     seed = None
-    doCentroid = False
-    continuous = True
     unwindOnly = False
     doComplicated = False
     alphaLimit = None # degrees
-    # betaLimit = 45
-    asyncio.run(main(seed, doCentroid, continuous, unwindOnly, doComplicated, alphaLimit))
-
-
-    # alphaLimit = None
-    # seed = 0
-    # complicatedThreshold = 70
-    # while True:
-    #     seed += 1
-    #     rg = newGrid(seed, alphaLimit)
-    #     try:
-    #         forwardPath, reversePath = generatePath(rg, plot=False, movie=False, fileIndex=0)
-    #     except:
-    #         print("skipping deadlocked path")
-    #         continue
-    #     maxSteps = 0
-    #     for abDict in forwardPath.values():
-    #         nPts = len(abDict["beta"])
-    #         if nPts > maxSteps:
-    #             maxSteps = nPts
-    #     if maxSteps > complicatedThreshold:
-    #         print("found complicated path!", maxSteps)
-    #         # exit function here
-    #         break
-    # rg = newGrid(seed, alphaLimit)
-    # forwardPath, reversePath = generatePath(rg, plot=True, movie=True, fileIndex=0)
-
-    # # seed = None
-    # # doCentroid = False
-    # # continuous = True
-    # # unwindOnly = False
-    # # doComplicated = False
-    # # alphaLimit = 340 # degrees
-    # # asyncio.run(main(seed, doCentroid, continuous, unwindOnly, doComplicated, alphaLimit))
-
-
+    asyncio.run(main(seed, CONTINUOUS, UNWINDONLY, doComplicated, alphaLimit))
 
