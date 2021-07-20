@@ -1,6 +1,6 @@
 import pandas as pd
-# import seaborn as sns
-# import matplotlib.pyplot as plt
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 gridFile = "fps_DesignReference.txt"
 
@@ -175,10 +175,38 @@ def getOSU():
 
     return updateAssignments(rows, cols, idAssign)
 
-
 # print(dR)
 
 osuWok = getOSU()
+
+
+def getOSUMini():
+    osuAssignFile = "FPS_MiniWok_Assignments_2021Jun10.csv"
+    osuDF = pd.read_csv(osuAssignFile)
+
+    rows = list(osuDF.Row)
+    cols = list(osuDF.Column)
+    dev = list(osuDF.DeviceID)
+    idAssign = []
+
+    rows = [int(x.strip("R")) for x in rows]
+    cols = [int(x.strip("C")) for x in cols]
+    for d in dev:
+        if d.startswith("P"):
+            idAssign.append(int(d.strip("P")))
+        elif d.startswith("FTO"):
+            idAssign.append(int(-1))
+        else:
+            raise RuntimeError("gah")
+
+    return updateAssignments(rows, cols, idAssign)
+
+osuMini = getOSUMini()
+#with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
+#    print(osuMini)
+
+
+# sns.scatterplot(x="x", y="y", data=osuMini)
 # osuWok.sort_values("assignment", ignore_index=True, inplace=True)
 # posTable = osuWok[osuWok.assignment != -1]
 # fidTable = osuWok[osuWok.assignment == -1]
@@ -191,9 +219,9 @@ osuWok = getOSU()
 
 # import pdb; pdb.set_trace()
 
-# sns.scatterplot(x="x", y="y", style="type", hue="assign", data=osuWok)
-# plt.axis("equal")
-# plt.show()
+#sns.scatterplot(x="x", y="y", style="type", data=osuMini)
+#plt.axis("equal")
+#plt.show()
 
 
 
