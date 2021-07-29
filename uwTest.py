@@ -44,7 +44,7 @@ collisionShrink = 0.05  # amount to decrease collisionBuffer by when checking sm
 exptime = 10000 # micro seconds
 nAvgImg = 20 # number of stack
 CONTINUOUS = True
-UNWINDONLY = False
+UNWINDONLY = True
 TAKE_IMGS = False
 LED_VALUE = 52
 ##################################################
